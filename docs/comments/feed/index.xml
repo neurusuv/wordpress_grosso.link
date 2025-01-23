@@ -8,10 +8,10 @@
 <channel>
 	<title>
 	Comments for Grosso Link	</title>
-	<atom:link href="/comments/feed/" rel="self" type="application/rss+xml" />
+	<atom:link href="/comments/feed" rel="self" type="application/rss+xml" />
 	<link>/</link>
 	<description></description>
-	<lastBuildDate>Tue, 05 Mar 2024 07:03:39 +0000</lastBuildDate>
+	<lastBuildDate>Thu, 23 Jan 2025 06:02:13 +0000</lastBuildDate>
 	<sy:updatePeriod>
 	hourly	</sy:updatePeriod>
 	<sy:updateFrequency>
