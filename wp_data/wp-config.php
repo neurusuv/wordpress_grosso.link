@@ -137,3 +137,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 /** Sets up WordPress vars and included files. */
 require_once ABSPATH . 'wp-settings.php';
+
+
+
+
+define('WP_HOME', getenv_docker('WORDPRESS_HOME', 'http://localhost:9898/'));
+define('WP_SITEURL', getenv_docker('WORDPRESS_SITEURL', 'http://localhost:9898/'));
+
+
+define('FS_METHOD', 'direct');
+define('FS_CHMOD_DIR', 0755);
+define('FS_CHMOD_FILE', 0644);

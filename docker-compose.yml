@@ -22,10 +22,12 @@ services:
       - ./wp_data:/var/www/html
       - ./docs:/var/www/html/public_static
     ports:
-      - 80:80
+      - ${WORDPRESS_PORT:-9898}:80
     restart: always
     environment:
       - WORDPRESS_DB_HOST=db
       - WORDPRESS_DB_USER=wordpress
       - WORDPRESS_DB_PASSWORD=wordpress
-      - WORDPRESS_DB_NAME=wordpress 
+      - WORDPRESS_DB_NAME=wordpress
+      - WORDPRESS_HOME=${WORDPRESS_HOME:-http://localhost:9898/}
+      - WORDPRESS_SITEURL=${WORDPRESS_SITEURL:-http://localhost:9898/} 

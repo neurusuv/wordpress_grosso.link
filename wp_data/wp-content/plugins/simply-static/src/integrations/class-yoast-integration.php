@@ -86,6 +86,7 @@ class Yoast_Integration extends Integration {
 		$urls = array(
 			\WPSEO_Sitemaps_Router::get_base_url( 'sitemap.xml' ),
 			\WPSEO_Sitemaps_Router::get_base_url( 'sitemap_index.xml' ),
+			\WPSEO_Sitemaps_Router::get_base_url( 'main-sitemap.xsl' ),
 		);
 
 		foreach ( $urls as $url ) {
@@ -97,6 +98,9 @@ class Yoast_Integration extends Integration {
 			$static_page->handler     = Yoast_Sitemap_Handler::class;
 			$static_page->save();
 		}
+
+		// Extract and add individual sitemap URLs from sitemap_index.xml
+		$this->extract_sitemap_urls_from_index();
 	}
 
 	/**
@@ -113,6 +117,29 @@ class Yoast_Integration extends Integration {
 
 		$urls[] = \WPSEO_Sitemaps_Router::get_base_url( 'sitemap.xml' );
 		$urls[] = \WPSEO_Sitemaps_Router::get_base_url( 'sitemap_index.xml' );
+		$urls[] = \WPSEO_Sitemaps_Router::get_base_url( 'main-sitemap.xsl' );
+
+		// Extract individual sitemap URLs from sitemap_index.xml
+		$sitemap_index_url = \WPSEO_Sitemaps_Router::get_base_url( 'sitemap_index.xml' );
+		$response = wp_remote_get( $sitemap_index_url, array( 'timeout' => 30 ) );
+
+		if ( ! is_wp_error( $response ) && wp_remote_retrieve_response_code( $response ) === 200 ) {
+			$xml_content = wp_remote_retrieve_body( $response );
+
+			// Use SimpleXML to parse the XML
+			libxml_use_internal_errors( true );
+			$xml = simplexml_load_string( $xml_content );
+
+			if ( $xml !== false && isset( $xml->sitemap ) ) {
+				foreach ( $xml->sitemap as $sitemap ) {
+					if ( isset( $sitemap->loc ) ) {
+						$sitemap_url = (string) $sitemap->loc;
+						$urls[] = $sitemap_url;
+						Util::debug_log( 'Adding individual sitemap URL to single export: ' . $sitemap_url );
+					}
+				}
+			}
+		}
 
 		return $urls;
 	}
@@ -128,10 +155,23 @@ class Yoast_Integration extends Integration {
 	public function replace_json_schema( $dom, $url ) {
 		$options = Options::instance();
 
-		foreach ( $dom->find( 'script.yoast-schema-graph' ) as $script ) {
-			$decoded_text      = html_entity_decode( $script->outertext, ENT_NOQUOTES );
-			$text              = preg_replace( '/(https?:)?\/\/' . addcslashes( Util::origin_host(), '/' ) . '/i', $options->get_destination_url(), $decoded_text );
-			$script->outertext = $text;
+		// Check if $dom is a string and convert it to a DOMDocument if needed
+		if ( is_string( $dom ) ) {
+			$doc = new \DOMDocument();
+			@$doc->loadHTML( $dom );
+			$dom = $doc;
+		}
+
+		// Use DOMXPath to find script elements with class 'yoast-schema-graph'
+		$xpath = new \DOMXPath( $dom );
+		$scripts = $xpath->query( '//script[contains(@class, "yoast-schema-graph")]' );
+
+		if ( $scripts ) {
+			foreach ( $scripts as $script ) {
+				$decoded_text = html_entity_decode( $script->nodeValue, ENT_NOQUOTES );
+				$text = preg_replace( '/(https?:)?\/\/' . addcslashes( Util::origin_host(), '/' ) . '/i', $options->get_destination_url(), $decoded_text );
+				$script->nodeValue = $text;
+			}
 		}
 
 		return $dom;
@@ -144,5 +184,53 @@ class Yoast_Integration extends Integration {
 	 */
 	public function dependency_active() {
 		return defined( 'WPSEO_FILE' );
+	}
+
+	/**
+	 * Extract sitemap URLs from sitemap_index.xml and add them to the queue.
+	 *
+	 * @return void
+	 */
+	protected function extract_sitemap_urls_from_index() {
+		if ( ! class_exists( 'WPSEO_Sitemaps_Router' ) ) {
+			return;
+		}
+
+		$sitemap_index_url = \WPSEO_Sitemaps_Router::get_base_url( 'sitemap_index.xml' );
+		$response = wp_remote_get( $sitemap_index_url, array( 'timeout' => 30 ) );
+
+		if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) {
+			Util::debug_log( 'Failed to fetch sitemap index: ' . $sitemap_index_url );
+			return;
+		}
+
+		$xml_content = wp_remote_retrieve_body( $response );
+
+		// Use SimpleXML to parse the XML
+		libxml_use_internal_errors( true );
+		$xml = simplexml_load_string( $xml_content );
+
+		if ( $xml === false ) {
+			Util::debug_log( 'Failed to parse sitemap index XML: ' . $sitemap_index_url );
+			return;
+		}
+
+		// Extract sitemap URLs
+		if ( isset( $xml->sitemap ) ) {
+			foreach ( $xml->sitemap as $sitemap ) {
+				if ( isset( $sitemap->loc ) ) {
+					$sitemap_url = (string) $sitemap->loc;
+
+					// Add the sitemap URL to the queue
+					Util::debug_log( 'Adding sitemap URL to queue: ' . $sitemap_url );
+					/** @var \Simply_Static\Page $static_page */
+					$static_page = Page::query()->find_or_initialize_by( 'url', $sitemap_url );
+					$static_page->set_status_message( __( 'Sitemap URL', 'simply-static' ) );
+					$static_page->found_on_id = 0;
+					$static_page->handler     = Yoast_Sitemap_Handler::class;
+					$static_page->save();
+				}
+			}
+		}
 	}
 }

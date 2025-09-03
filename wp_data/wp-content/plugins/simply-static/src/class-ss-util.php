@@ -141,16 +141,39 @@ class Util {
 	 * @return string         String containing the contents of the object
 	 */
 	protected static function get_contents_from_object( $object ) {
+		// Handle common scalar types early and safely
 		if ( is_string( $object ) ) {
-			return $object;
+			// Prevent huge memory usage by truncating very large strings
+			return self::truncate( $object, 5000 );
+		}
+		if ( is_null( $object ) ) {
+			return 'NULL';
+		}
+		if ( is_bool( $object ) ) {
+			return $object ? 'TRUE' : 'FALSE';
+		}
+		if ( is_int( $object ) || is_float( $object ) ) {
+			return (string) $object;
+		}
+		if ( is_resource( $object ) ) {
+			return 'resource(' . get_resource_type( $object ) . ')';
 		}
 
-		ob_start();
-		var_dump( $object );
-		$contents = ob_get_contents();
-		ob_end_clean();
+		// For arrays/objects, avoid var_dump which can explode memory usage.
+		// Prefer JSON with partial output on error; fall back to print_r.
+		$max_length = apply_filters( 'simply_static_debug_max_length', 100000 ); // 100 KB by default
+		$json_opts  = defined( 'JSON_PARTIAL_OUTPUT_ON_ERROR' ) ? JSON_PARTIAL_OUTPUT_ON_ERROR : 0;
+		$encoded    = function_exists( 'wp_json_encode' ) ? wp_json_encode( $object, $json_opts, 5 ) : json_encode( $object, $json_opts, 5 );
 
-		return $contents;
+		if ( $encoded === false || $encoded === null ) {
+			$encoded = print_r( $object, true );
+		}
+
+		if ( strlen( $encoded ) > $max_length ) {
+			$encoded = substr( $encoded, 0, $max_length ) . '... [truncated]';
+		}
+
+		return $encoded;
 	}
 
 	public static function is_valid_scheme( $scheme ) {
@@ -178,6 +201,11 @@ class Util {
 	 * @return string|null                   Absolute URL, or null
 	 */
 	public static function relative_to_absolute_url( $extracted_url, $page_url ) {
+
+		// we can't do anything with null or blank urls
+		if ( $extracted_url === null ) {
+			return null;
+		}
 
 		$extracted_url = trim( $extracted_url );
 
@@ -445,26 +473,16 @@ class Util {
 		}
 
 		$allowed_asset_extensions = apply_filters( 'simply_static_allowed_local_asset_extensions', [
-			'webp',
-			'gif',
-			'jpg',
-			'jpeg',
-			'png',
-			'svg',
-			'mp4',
-			'webm',
-			'ogg',
-			'ogv',
-			'mp3',
-			'wav',
-			'json',
-			'js',
-			'css',
-			'xml',
-			'csv',
-			'pdf',
-			'txt',
-			'cur'
+			// Images
+			'webp', 'gif', 'jpg', 'jpeg', 'png', 'svg', 'ico', 'cur',
+			// Media
+			'mp4', 'webm', 'ogg', 'ogv', 'mp3', 'wav',
+			// Data/Docs
+			'json', 'xml', 'csv', 'pdf', 'txt',
+			// Web assets
+			'js', 'css',
+			// Fonts
+			'woff2', 'woff', 'ttf', 'eot', 'otf'
 		] );
 
 		$path_info = self::url_path_info( $url );
@@ -500,6 +518,9 @@ class Util {
 	 * @param string $path File path to remove leading directory separators from
 	 */
 	public static function remove_leading_directory_separator( $path ) {
+		if ( $path === null ) {
+			return '';
+		}
 		return ltrim( $path, DIRECTORY_SEPARATOR );
 	}
 
@@ -518,6 +539,9 @@ class Util {
 	 * @param string $path URL path to remove leading slash from
 	 */
 	public static function remove_leading_slash( $path ) {
+		if ( $path === null ) {
+			return '';
+		}
 		return ltrim( $path, '/' );
 	}
 
@@ -527,16 +551,20 @@ class Util {
 	 * @param array $messages Array of messages to add the message to
 	 * @param string $task_name Name of the task
 	 * @param string $message Message to display about the status of the job
+	 * @param boolean $unique If unique, the task_name/key will get a prefix if the same exists.
 	 *
 	 * @return array
 	 */
-	public static function add_archive_status_message( $messages, $task_name, $message ) {
+	public static function add_archive_status_message( $messages, $task_name, $message, $unique = false ) {
 		if ( ! is_array( $messages ) ) {
 			$messages = array();
 		}
 
 		// if the state exists, set the datetime and message
-		if ( ! array_key_exists( $task_name, $messages ) ) {
+		if ( ! array_key_exists( $task_name, $messages ) || $unique ) {
+			if ( $unique ) {
+				$task_name = $task_name . '_' . uniqid();
+			}
 			$messages[ $task_name ] = array(
 				'message'  => $message,
 				'datetime' => self::formatted_datetime()
@@ -556,10 +584,29 @@ class Util {
 	 * @return string
 	 */
 	public static function abs_path_to_url( $path = '' ) {
+		$normalized_path = wp_normalize_path( $path );
+
+		// Check if the path is within WP_CONTENT_DIR
+		if ( defined( 'WP_CONTENT_DIR' ) && defined( 'WP_CONTENT_URL' ) ) {
+			$normalized_content_dir = wp_normalize_path( untrailingslashit( WP_CONTENT_DIR ) );
+
+			// If the path starts with the content directory, use WP_CONTENT_URL for replacement
+			if ( strpos( $normalized_path, $normalized_content_dir ) === 0 ) {
+				$url = str_replace(
+					$normalized_content_dir,
+					untrailingslashit( WP_CONTENT_URL ),
+					$normalized_path
+				);
+
+				return esc_url_raw( $url );
+			}
+		}
+
+		// Default behavior for paths not in WP_CONTENT_DIR
 		$url = str_replace(
 			wp_normalize_path( untrailingslashit( ABSPATH ) ),
 			site_url(),
-			wp_normalize_path( $path )
+			$normalized_path
 		);
 
 		return esc_url_raw( $url );
@@ -597,6 +644,38 @@ class Util {
 	 */
 	public static function normalize_slashes( string $path ): string {
 		return strpos( $path, '\\' ) !== false ? str_replace( '\\', '/', $path ) : $path;
+	}
+
+	/**
+	 * Build a safe relative path from an absolute path and its base directory.
+	 * Ensures forward slashes and a leading slash for consistent URL building.
+	 *
+	 * @param string $base_dir      The base directory (prefix) of the absolute path.
+	 * @param string $absolute_path The absolute path to the file.
+	 * @return string               The normalized relative path starting with '/'.
+	 */
+	public static function safe_relative_path( string $base_dir, string $absolute_path ): string {
+		$dir_norm = rtrim( $base_dir, DIRECTORY_SEPARATOR );
+		$rel      = substr( $absolute_path, strlen( $dir_norm ) );
+		if ( $rel === false ) {
+			$rel = str_replace( $base_dir, '', $absolute_path );
+		}
+		$rel = str_replace( '\\', '/', $rel );
+		if ( $rel === '' || $rel[0] !== '/' ) {
+			$rel = '/' . ltrim( $rel, '/' );
+		}
+		return $rel;
+	}
+
+	/**
+	 * Join a base URL and a relative path with exactly one slash.
+	 *
+	 * @param string $base_url      Base URL (may end with or without a slash).
+	 * @param string $relative_path Relative path (may start with or without a slash).
+	 * @return string               The joined URL.
+	 */
+	public static function safe_join_url( string $base_url, string $relative_path ): string {
+		return rtrim( $base_url, '/' ) . '/' . ltrim( $relative_path, '/' );
 	}
 
 	/**
@@ -674,6 +753,12 @@ class Util {
 		foreach ( $tasks as $task ) {
 			delete_option( 'simply_static_' . $task . '_total_pages' );
 		}
+	}
+
+	public static function get_temp_dir_url() {
+		$dir = self::get_temp_dir();
+
+		return self::abs_path_to_url( $dir );
 	}
 
 	/*

@@ -103,12 +103,14 @@ class Upgrade_Handler {
 			'github_webhook_url'            => '',
 			'github_folder_path'            => '',
 			'github_throttle_requests'      => false,
+			'aws_auth_method'               => 'aws-iam-key',
 			'aws_region'                    => 'us-east-2',
 			'aws_access_key'                => '',
 			'aws_access_secret'             => '',
 			'aws_bucket'                    => '',
 			'aws_subdirectory'              => '',
 			'aws_distribution_id'           => '',
+			'aws_webhook_url'               => '',
 			'aws_empty'                     => false,
 			's3_access_key'                 => '',
 			's3_base_url'                   => '',
@@ -128,6 +130,7 @@ class Upgrade_Handler {
 			'search_excludable'             => '',
 			'search_metadata'               => '',
 			'fuse_selector'                 => '.search-field',
+			'fuse_threshold'                => 0.1,
 			'algolia_app_id'                => '',
 			'algolia_admin_api_key'         => '',
 			'algolia_search_api_key'        => '',
@@ -141,16 +144,15 @@ class Upgrade_Handler {
 			'minify_inline_js'              => false,
 			'generate_404'                  => false,
 			'add_feeds'                     => false,
+			'add_rest_api'                  => false,
+			'smart_crawl'                   => true,
 			'wp_content_folder'             => '',
 			'wp_includes_folder'            => '',
 			'wp_uploads_folder'             => '',
 			'wp_plugins_folder'             => '',
 			'wp_themes_folder'              => '',
 			'theme_style_name'              => 'style',
-			'rename_plugin_folders'         => false,
 			'author_url'                    => '',
-			'hide_rest_api'                 => false,
-			'hide_style_id'                 => false,
 			'hide_comments'                 => false,
 			'hide_version'                  => false,
 			'hide_generator'                => false,
@@ -185,6 +187,9 @@ class Upgrade_Handler {
 				// Sync database.
 				Page::create_or_update_table();
 
+				// Clean up renamed crawlers in the crawlers option
+				self::cleanup_renamed_crawlers();
+
 				// Update version.
 				self::$options
 					->set( 'version', SIMPLY_STATIC_VERSION )
@@ -200,9 +205,63 @@ class Upgrade_Handler {
 	 */
 	protected static function set_default_options() {
 		foreach ( self::$default_options as $option_key => $option_value ) {
-			if ( self::$options->get( $option_key ) === null ) {
+			// For new installations, ensure smart_crawl is set to true
+			if ( $option_key === 'smart_crawl' ) {
+				self::$options->set( $option_key, true );
+			} else if ( self::$options->get( $option_key ) === null ) {
 				self::$options->set( $option_key, $option_value );
 			}
+		}
+
+		// Save the options
+		self::$options->save();
+	}
+
+	/**
+	 * Clean up renamed crawlers in the crawlers option
+	 *
+	 * @return void
+	 */
+	protected static function cleanup_renamed_crawlers() {
+		$crawlers = self::$options->get( 'crawlers' );
+
+		// If crawlers is not an array or is empty, nothing to do
+		if ( ! is_array( $crawlers ) || empty( $crawlers ) ) {
+			return;
+		}
+
+		$updated = false;
+
+		// Check for old crawler IDs and replace them with new ones
+		$crawler_replacements = [
+			'block_theme' => 'wp_includes'
+		];
+
+		foreach ( $crawler_replacements as $old_id => $new_id ) {
+			$old_id_index = array_search( $old_id, $crawlers, true );
+
+			// If the old ID exists in the array
+			if ( $old_id_index !== false ) {
+				// Remove the old ID
+				unset( $crawlers[ $old_id_index ] );
+
+				// Add the new ID if it doesn't already exist
+				if ( ! in_array( $new_id, $crawlers, true ) ) {
+					$crawlers[] = $new_id;
+				}
+
+				$updated = true;
+			}
+		}
+
+		// If we made changes, save the updated crawlers
+		if ( $updated ) {
+			// Reindex the array to ensure sequential numeric keys
+			$crawlers = array_values( $crawlers );
+
+			self::$options->set( 'crawlers', $crawlers )->save();
+
+			\Simply_Static\Util::debug_log( 'Updated crawler IDs in options: ' . implode( ', ', $crawlers ) );
 		}
 	}
 }

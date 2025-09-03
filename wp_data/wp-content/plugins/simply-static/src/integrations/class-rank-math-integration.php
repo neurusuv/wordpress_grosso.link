@@ -105,7 +105,6 @@ class Rank_Math_Integration extends Integration {
 
 	}
 
-
 	/**
 	 * Register sitemap maps for static export.
 	 *
@@ -116,14 +115,24 @@ class Rank_Math_Integration extends Integration {
 			return;
 		}
 
-		$url = Router::get_base_url( 'sitemap_index.xml' );
-		Util::debug_log( 'Adding sitemap URL to queue: ' . $url );
-		/** @var \Simply_Static\Page $static_page */
-		$static_page = Page::query()->find_or_initialize_by( 'url', $url );
-		$static_page->set_status_message( __( 'Sitemap URL', 'simply-static' ) );
-		$static_page->found_on_id = 0;
-		$static_page->handler     = Rank_Math_Sitemap_Handler::class;
-		$static_page->save();
+		$urls = array(
+			Router::get_base_url( 'sitemap_index.xml' ),
+			Router::get_base_url( 'main-sitemap.xsl' )
+	);
+
+		foreach ( $urls as $url ) {
+			Util::debug_log( 'Adding sitemap URL to queue: ' . $url );
+
+			/** @var \Simply_Static\Page $static_page */
+			$static_page = Page::query()->find_or_initialize_by( 'url', $url );
+			$static_page->set_status_message( __( 'Sitemap URL', 'simply-static' ) );
+			$static_page->found_on_id = 0;
+			$static_page->handler     = Rank_Math_Sitemap_Handler::class;
+			$static_page->save();
+		}
+
+		// Extract and add individual sitemap URLs from sitemap_index.xml
+		$this->extract_sitemap_urls_from_index();
 	}
 
 	/**
@@ -139,6 +148,29 @@ class Rank_Math_Integration extends Integration {
 		}
 
 		$urls[] = Router::get_base_url( 'sitemap_index.xml' );
+		$urls[] = Router::get_base_url( 'main-sitemap.xsl' );
+
+		// Extract individual sitemap URLs from sitemap_index.xml
+		$sitemap_index_url = Router::get_base_url( 'sitemap_index.xml' );
+		$response = wp_remote_get( $sitemap_index_url, array( 'timeout' => 30 ) );
+
+		if ( ! is_wp_error( $response ) && wp_remote_retrieve_response_code( $response ) === 200 ) {
+			$xml_content = wp_remote_retrieve_body( $response );
+
+			// Use SimpleXML to parse the XML
+			libxml_use_internal_errors( true );
+			$xml = simplexml_load_string( $xml_content );
+
+			if ( $xml !== false && isset( $xml->sitemap ) ) {
+				foreach ( $xml->sitemap as $sitemap ) {
+					if ( isset( $sitemap->loc ) ) {
+						$sitemap_url = (string) $sitemap->loc;
+						$urls[] = $sitemap_url;
+						Util::debug_log( 'Adding individual sitemap URL to single export: ' . $sitemap_url );
+					}
+				}
+			}
+		}
 
 		return $urls;
 	}
@@ -154,10 +186,16 @@ class Rank_Math_Integration extends Integration {
 	public function replace_json_schema( $dom, $url ) {
 		$options = Options::instance();
 
-		foreach ( $dom->find( 'script.rank-math-schema' ) as $script ) {
-			$decoded_text      = html_entity_decode( $script->outertext, ENT_NOQUOTES );
-			$text              = preg_replace( '/(https?:)?\/\/' . addcslashes( Util::origin_host(), '/' ) . '/i', $options->get_destination_url(), $decoded_text );
-			$script->outertext = $text;
+		// Use DOMXPath to find script elements with class 'rank-math-schema'
+		$xpath = new \DOMXPath( $dom );
+		$scripts = $xpath->query( '//script[contains(@class, "rank-math-schema")]' );
+
+		if ( $scripts ) {
+			foreach ( $scripts as $script ) {
+				$decoded_text = html_entity_decode( $script->nodeValue, ENT_NOQUOTES );
+				$text = preg_replace( '/(https?:)?\/\/' . addcslashes( Util::origin_host(), '/' ) . '/i', $options->get_destination_url(), $decoded_text );
+				$script->nodeValue = $text;
+			}
 		}
 
 		return $dom;
@@ -170,5 +208,53 @@ class Rank_Math_Integration extends Integration {
 	 */
 	public function dependency_active() {
 		return class_exists( 'RankMath' );
+	}
+
+	/**
+	 * Extract sitemap URLs from sitemap_index.xml and add them to the queue.
+	 *
+	 * @return void
+	 */
+	protected function extract_sitemap_urls_from_index() {
+		if ( ! class_exists( '\RankMath\Sitemap\Router' ) ) {
+			return;
+		}
+
+		$sitemap_index_url = Router::get_base_url( 'sitemap_index.xml' );
+		$response = wp_remote_get( $sitemap_index_url, array( 'timeout' => 30 ) );
+
+		if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) {
+			Util::debug_log( 'Failed to fetch sitemap index: ' . $sitemap_index_url );
+			return;
+		}
+
+		$xml_content = wp_remote_retrieve_body( $response );
+
+		// Use SimpleXML to parse the XML
+		libxml_use_internal_errors( true );
+		$xml = simplexml_load_string( $xml_content );
+
+		if ( $xml === false ) {
+			Util::debug_log( 'Failed to parse sitemap index XML: ' . $sitemap_index_url );
+			return;
+		}
+
+		// Extract sitemap URLs
+		if ( isset( $xml->sitemap ) ) {
+			foreach ( $xml->sitemap as $sitemap ) {
+				if ( isset( $sitemap->loc ) ) {
+					$sitemap_url = (string) $sitemap->loc;
+
+					// Add the sitemap URL to the queue
+					Util::debug_log( 'Adding sitemap URL to queue: ' . $sitemap_url );
+					/** @var \Simply_Static\Page $static_page */
+					$static_page = Page::query()->find_or_initialize_by( 'url', $sitemap_url );
+					$static_page->set_status_message( __( 'Sitemap URL', 'simply-static' ) );
+					$static_page->found_on_id = 0;
+					$static_page->handler     = Rank_Math_Sitemap_Handler::class;
+					$static_page->save();
+				}
+			}
+		}
 	}
 }
